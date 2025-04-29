@@ -3,150 +3,26 @@
 #include <stdlib.h>
 #include "stm32l476xx.h"
 #include "SysClock.h"
+#include "ssd1306.h"
+#include "I2C.h"
+#include "motor.c"
 
-#define LMOTOR_FWD 5 // D13
-#define LMOTOR_REV 1 // A1
-#define RMOTOR_FWD 7 // D11
-#define RMOTOR_REV 6 // D12
-// note: changing these pins may require changes in the AFR register setting in GPIOA_init
+#define LS 15 // PB15, D6
+#define MS 14 // PB14, D5
+#define RS 13 // PB13, D4
 
-void myDelay(uint16_t ms)
+#define LLED 14
+#define RLED 15
+#define BUZZ 13
+
+// sensor must read above this value to be considered "on the line"
+#define LINE_THRESHOLD 13000
+int speed = 430;
+
+void GPIO_init(void)
 {
-	if (ms == 0) return;
-	RCC->APB1ENR1 |= RCC_APB1ENR1_TIM7EN; // enable timer's clock
-	TIM7->CR1 &= ~TIM_CR1_CEN;            // disable the timer's counter
-	TIM7->SR = 0;                         // clear status register. this single-bit register is set when CNT reaches ARR.
-	TIM7->CNT = 0;                        // start CNT at 0
-	TIM7->PSC = 4000 - 1;                 // 4Mhz down to 1Khz
-	TIM7->ARR = ms - 1;                   // control how long to count for
-	TIM7->CR1 |= TIM_CR1_CEN;             // enable the counter to begin delay period
-	while ((TIM7->SR & TIM_SR_UIF) == 0); // wait until CNT reaches ARR, which means the delay period has finished
-}
-
-void TIM2_init(void)
-{
-	// enable the cock to timer 2
-	RCC->APB1ENR1 |= RCC_APB1ENR1_TIM2EN;
-	
-	// 4Mhz down to 50 kHz
-	TIM2->PSC = 80 - 1;
-	
-	// pwm period = 20ms, 1000 discrete dutycycles
-	TIM2->ARR = 1000 - 1;
-	
-	// initial dutycycle = 0%
-	TIM2->CCR1 = 0;
-	TIM2->CCR2 = 0;
-	
-	// set PWM mode 1 for both channels
-	TIM2->CCMR1 |= (0b110  << 4) | (0b110 << 12);
-	
-	// enable preload for ch1 and 2. preload ensures that changes to CCR1 only take effect on the next PWM cycle.
-	TIM2->CCMR1 |= (1 << 3) | (1 << 11);
-	
-	// enable channel 1 output and channel 2 output
-	TIM2->CCER |= 1 | (1 << 4);
-	
-	// switch polarity, active low
-	TIM2->CCER |= (1 << 1) | (1 << 5);
-	
-	// global enable
-	TIM2->BDTR |= TIM_BDTR_MOE;
-	
-	// enable counter
-	TIM2->CR1 |= 1;
-}
-
-void TIM3_init(void)
-{
-	// enable the cock to timer 2
-	RCC->APB1ENR1 |= RCC_APB1ENR1_TIM3EN;
-	
-	// 4Mhz down to 50 kHz
-	TIM3->PSC = 80 - 1;
-	
-	// pwm period = 20ms, 1000 discrete dutycycles
-	TIM3->ARR = 1000 - 1;
-	
-	// initial dutycycle = 0%
-	TIM3->CCR1 = 0;
-	TIM3->CCR2 = 0;
-	
-	// set PWM mode 1 for both channels
-	TIM3->CCMR1 |= (0b110  << 4) | (0b110 << 12);
-	
-	// enable preload for ch1 and 2. preload ensures that changes to CCR1 only take effect on the next PWM cycle.
-	TIM3->CCMR1 |= (1 << 3) | (1 << 11);
-	
-	// enable channel 1 output and channel 2 output
-	TIM3->CCER |= 1 | (1 << 4);
-	
-	// switch polarity, active low
-	TIM3->CCER |= (1 << 1) | (1 << 5);
-	
-	// global enable
-	TIM3->BDTR |= TIM_BDTR_MOE;
-	
-	// enable counter
-	TIM3->CR1 |= 1;
-}
-
-void setLeftMotorSpeed(int ds) // ds is from -1000 to 1000
-{	
-	
-	// forward
-	if (ds < 0)
-	{
-		TIM2->CCR1 = -ds;
-		TIM2->CCR2 = 0;
-	}
-	
-	// reverse
-	else if (ds > 0)
-	{
-		TIM2->CCR1 = 0;
-		TIM2->CCR2 = ds;
-	}
-	
-	// neutral, ds=0
-	else
-	{
-		TIM2->CCR1 = 0;
-		TIM2->CCR2 = 0;
-	}
-	
-}
-
-void setRightMotorSpeed(int ds) // ds is from -1000 to 1000
-{	
-	
-	// forward
-	if (ds < 0)
-	{
-		TIM3->CCR1 = -ds;
-		TIM3->CCR2 = 0;
-	}
-	
-	// reverse
-	else if (ds > 0)
-	{
-		TIM3->CCR1 = 0;
-		TIM3->CCR2 = ds;
-	}
-	
-	// neutral, ds=0
-	else
-	{
-		TIM3->CCR1 = 0;
-		TIM3->CCR2 = 0;
-	}
-	
-}
-
-void GPIOA_init(void)
-{
-	// enable the cock to GPIO Port A
-	RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN;
+	// enable the cock to GPIO Port A and B
+	RCC->AHB2ENR |= RCC_AHB2ENR_GPIOAEN | RCC_AHB2ENR_GPIOBEN;
 	
 	// set MODER to alternate function mode for the two LMOTOR pins
 	GPIOA->MODER &= ~((0b11 << LMOTOR_FWD*2) | (0b11 << LMOTOR_REV*2));
@@ -162,62 +38,114 @@ void GPIOA_init(void)
 	// for PA6 and PA7, "0010" maps to timer 3 channels 1 and 2, respectively
 	GPIOA->AFR[0] |= (2 << RMOTOR_FWD*4) | (2 << RMOTOR_REV*4);
 	
+	// set MODER for LED pins and buzzer
+	GPIOA->MODER &= ~(0b11 << 2*LLED);
+	GPIOA->MODER |= (0b01 << 2*LLED);
+	GPIOA->MODER &= ~(0b11 << 2*RLED);
+	GPIOA->MODER |= (0b01 << 2*RLED);
+	GPIOA->MODER &= ~(0b11 << 2*BUZZ);
+	GPIOA->MODER |= (0b01 << 2*BUZZ);
 	
+	// set output low for buzzer
+	GPIOA->ODR &= ~(1 << BUZZ);
 }
 
-void testMotors(void)
-{	
-	// move left motor forward, full speed
-	setLeftMotorSpeed(1000);
-	myDelay(1000);
-	setLeftMotorSpeed(0);
-	myDelay(1000);
-		
-	// move right motor forward, full speed
-	setRightMotorSpeed(1000);
-	myDelay(1000);
-	setRightMotorSpeed(0);
-	myDelay(1000);
+int readSensor(int pin)
+{
+	int counter = 0;
+	GPIOB->ODR &= ~(1 << pin);
 	
-	// move both motors backward, full speed
-	setLeftMotorSpeed(-1000);
-	setRightMotorSpeed(-1000);
-	myDelay(1000);
-	setLeftMotorSpeed(0);
-	setRightMotorSpeed(0);
+	// output
+	GPIOB->MODER &= ~(0b11 << 2*pin);
+	GPIOB->MODER |= (0b01 << 2*pin);
+	GPIOB->ODR |= 1 << pin;
 	
-	// slowly increase the speed of both motors until it's maxed, wait 1 second while at max power, then stop both motors
-	int spd = 0;
-	while (spd <= 1000)
-	{
-		setLeftMotorSpeed(spd);
-		setRightMotorSpeed(spd);
-		spd++;
-		myDelay(10);
-	}
-	myDelay(1000);
-	setLeftMotorSpeed(0);
-	setRightMotorSpeed(0);
+	delayMs(1);
+	
+	// input
+	GPIOB->MODER &= ~(0b11 << 2*pin);
+	
+	// wait for pin to go low
+	while (GPIOB->IDR & (1 << pin) && counter < LINE_THRESHOLD + 1) counter++;
+	
+	return (counter > LINE_THRESHOLD);
 }
 
+void print(char* str, int cu, int line) 
+{
+	// cu is "clear-update"
+	// if cu is 0, just print
+	// if cu is 1, clear before printing
+	// if cu is 2, update screen after printing
+	if (cu == 1) ssd1306_Fill(Black);
+	ssd1306_SetCursor(0,10*line);
+	ssd1306_WriteString(str, Font_7x10, White);
+	if (cu == 2) ssd1306_UpdateScreen();
+}
 
-
-
+int state = 1;
+void printSensorVals()
+{
+	char ls[10];
+	char ms[10];
+	char rs[20];
+	sprintf(ls, "L %d", readSensor(LS));
+	sprintf(ms, "M %d", readSensor(MS));
+	sprintf(rs, "R %d, %s", readSensor(RS), (state) ? "state" : "left");
+	print(ls, 1, 2);
+	print(ms, 0, 3);
+	print(rs, 2, 4);
+}
+void switchState()
+{
+	// four possible values:
+	// 0 = on the line. MS = black, RS = LS = white
+	if (state == 1) state = 0;
+	else state = 1;
+}
 
 int main(void)
 {
-	int spd = 0;
-	int spdStep = 1;
-	
-	GPIOA_init();
+	System_Clock_Init(); 
+	I2C_GPIO_init();
+	I2C_Initialization(I2C1);
+	ssd1306_Init();
+	ssd1306_SetCursor(2,0);
+	GPIO_init();
 	TIM2_init();
 	TIM3_init();
-	
+
+	int prevState = state;
+	int lval, rval;
+	int stateCounter;
 	while (1)
 	{
-		myDelay(5000);
-		testMotors();
-
-	}
+		
+		// update state
+		lval = readSensor(LS);
+		rval = readSensor(RS);
+		GPIOA->ODR &= ~(1 << BUZZ);
+		if ((lval && rval) || (!lval && !rval)) continue;
+		else if (lval) state = 1;
+		else if (rval) state = 2;
+		
+		// update motors and LEDs
+		if (state == 2)
+		{
+			setLeftMotorSpeed(speed);
+			setRightMotorSpeed(0);
+			GPIOA->ODR &= ~(1 << LLED);
+			GPIOA->ODR |= (1 << RLED);
+		}
+		else if (state == 1)
+		{
+			setRightMotorSpeed(speed + 30);
+			setLeftMotorSpeed(0);
+			GPIOA->ODR &= ~(1 << RLED);
+			GPIOA->ODR |= (1 << LLED);
+		}
+		if (prevState != state) GPIOA->ODR |= (1 << BUZZ);
+		prevState = state;
+}
 }
 
