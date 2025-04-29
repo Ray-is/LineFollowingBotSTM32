@@ -17,7 +17,7 @@
 
 // sensor must read above this value to be considered "on the line"
 #define LINE_THRESHOLD 13000
-int speed = 430;
+int speed = 500;
 
 void GPIO_init(void)
 {
